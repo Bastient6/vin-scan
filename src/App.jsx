@@ -7,6 +7,7 @@ function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [useBackend, setUseBackend] = useState(false);
 
   // Simulate OCR - in production, use Tesseract.js
   const scanImage = async (file) => {
@@ -41,26 +42,41 @@ function App() {
 
   const fetchResult = async (scannedText) => {
     try {
-      // Utilisation de l'API Hugging Face Inference (gratuite)
-      const response = await fetch(
-        "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
-        {
+      let response;
+      
+      if (useBackend) {
+        // Option 1: Appel via votre backend Node.js
+        response = await fetch("/api/analyze", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
+          body: JSON.stringify({ text: scannedText })
+        });
+      } else {
+        // Option 2: Utiliser OpenRouter (proxy CORS-friendly pour LLMs gratuits)
+        response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "HTTP-Referer": window.location.origin,
+          },
           body: JSON.stringify({
-            inputs: `Tu es un expert sommelier. Analyse ce vin: "${scannedText}"
+            model: "meta-llama/llama-3.2-3b-instruct:free",
+            messages: [
+              {
+                role: "user",
+                content: `Tu es un expert sommelier. Analyse ce vin: "${scannedText}"
 
-Réponds UNIQUEMENT avec un objet JSON valide (sans markdown) avec cette structure:
+Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans texte avant ou après) avec cette structure exacte:
 {
-  "maturity": "description de la maturité",
-  "peak": "période d'apogée",
-  "value": "estimation de valeur en euros",
+  "maturity": "description de la maturité actuelle",
+  "peak": "période d'apogée estimée (ex: 2025-2035)",
+  "value": "estimation de valeur en euros (ex: 200-400€)",
   "tasting": {
-    "temperature": "température en °C",
-    "decanting": "durée de carafage",
-    "glass": "type de verre"
+    "temperature": "température de service (ex: 17-18°C)",
+    "decanting": "durée de carafage (ex: 2 heures)",
+    "glass": "type de verre (ex: Verre à Bordeaux)"
   },
   "profile_scores": {
     "corps": 7,
@@ -69,99 +85,99 @@ Réponds UNIQUEMENT avec un objet JSON valide (sans markdown) avec cette structu
     "fruits": 7,
     "complexite": 9
   },
-  "tasting_notes": "description des arômes",
-  "pairings": ["accord 1", "accord 2", "accord 3"]
-}
-
-JSON uniquement, rien d'autre:`,
-            parameters: {
-              max_new_tokens: 800,
-              temperature: 0.7,
-              return_full_text: false
-            }
+  "tasting_notes": "description détaillée des arômes et saveurs",
+  "pairings": ["accord mets-vin 1", "accord 2", "accord 3"]
+}`
+              }
+            ]
           })
-        }
-      );
+        });
+      }
 
       if (!response.ok) {
-        throw new Error(`Erreur API: ${response.status}`);
+        throw new Error(`Erreur API: ${response.status} - ${response.statusText}`);
       }
 
       const data = await response.json();
       
       let textContent = "";
-      if (Array.isArray(data) && data[0]?.generated_text) {
-        textContent = data[0].generated_text;
-      } else if (data.generated_text) {
-        textContent = data.generated_text;
+      
+      if (useBackend) {
+        // Format de votre backend
+        textContent = data.result || "";
       } else {
-        throw new Error("Format de réponse inattendu");
+        // Format OpenRouter
+        textContent = data.choices?.[0]?.message?.content || "";
+      }
+      
+      if (!textContent) {
+        throw new Error("Réponse vide du LLM");
       }
       
       let parsedResult;
       try {
-        const cleanJson = textContent
+        // Nettoyage du JSON
+        let cleanJson = textContent
           .replace(/```json\n?/g, "")
           .replace(/```\n?/g, "")
-          .replace(/^[^{]*/, "")
-          .replace(/[^}]*$/, "")
           .trim();
+        
+        // Extraire uniquement le JSON s'il y a du texte avant/après
+        const jsonMatch = cleanJson.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          cleanJson = jsonMatch[0];
+        }
         
         parsedResult = JSON.parse(cleanJson);
         
-        // Validation et normalisation
-        if (!parsedResult.maturity) parsedResult.maturity = "Information non disponible";
-        if (!parsedResult.peak) parsedResult.peak = "Information non disponible";
-        if (!parsedResult.value) parsedResult.value = "Non estimé";
-        if (!parsedResult.tasting) {
-          parsedResult.tasting = {
-            temperature: "16-18°C",
-            decanting: "1-2 heures",
-            glass: "Verre à Bordeaux"
-          };
-        }
-        if (!parsedResult.profile_scores) {
-          parsedResult.profile_scores = {
-            corps: 7,
-            tanins: 7,
-            acidite: 6,
-            fruits: 7,
-            complexite: 8
-          };
-        }
-        if (!parsedResult.tasting_notes) parsedResult.tasting_notes = "Notes complexes de fruits rouges et d'épices";
-        if (!parsedResult.pairings || !Array.isArray(parsedResult.pairings)) {
-          parsedResult.pairings = ["Viandes rouges", "Fromages affinés", "Plats en sauce"];
-        }
+        // Validation des champs requis
+        if (!parsedResult.maturity) throw new Error("Champ maturity manquant");
+        if (!parsedResult.peak) throw new Error("Champ peak manquant");
+        if (!parsedResult.value) throw new Error("Champ value manquant");
+        if (!parsedResult.tasting) throw new Error("Champ tasting manquant");
+        if (!parsedResult.profile_scores) throw new Error("Champ profile_scores manquant");
+        if (!parsedResult.tasting_notes) throw new Error("Champ tasting_notes manquant");
+        if (!parsedResult.pairings) throw new Error("Champ pairings manquant");
         
       } catch (parseErr) {
-        console.error("Erreur de parsing:", parseErr, textContent);
+        console.error("Erreur de parsing:", parseErr);
+        console.log("Contenu brut:", textContent);
+        
+        // Analyse heuristique en fallback
+        const year = scannedText.match(/\d{4}/)?.[0] || "2015";
+        const age = 2025 - parseInt(year);
+        const isPremium = /grand cru|premier|classé|réserve/i.test(scannedText);
+        const isBordeaux = /margaux|pauillac|saint-émilion|pomerol|bordeaux/i.test(scannedText);
         
         parsedResult = {
-          maturity: "Vin de garde en évolution",
-          peak: "2025-2035",
-          value: "200-400€",
+          maturity: age < 5 ? "Jeune, encore sur le fruit" : age < 10 ? "En évolution, s'ouvrant progressivement" : "Mature et complexe",
+          peak: `${parseInt(year) + 10}-${parseInt(year) + 20}`,
+          value: isPremium ? "250-500€" : "50-120€",
           tasting: {
-            temperature: "17-18°C",
-            decanting: "2 heures",
+            temperature: isBordeaux ? "17-18°C" : "16-17°C",
+            decanting: age < 5 ? "1 heure" : "2-3 heures",
             glass: "Verre à Bordeaux"
           },
           profile_scores: {
             corps: 8,
-            tanins: 8,
+            tanins: isBordeaux ? 8 : 6,
             acidite: 6,
             fruits: 7,
-            complexite: 9
+            complexite: isPremium ? 9 : 7
           },
-          tasting_notes: "Bouquet complexe de fruits noirs, notes de cèdre et épices. Tanins soyeux et finale persistante.",
-          pairings: ["Côte de bœuf", "Magret de canard", "Comté 24 mois"]
+          tasting_notes: isBordeaux ? 
+            "Bouquet complexe de fruits noirs mûrs (cassis, mûre), notes de cèdre, de tabac et d'épices douces. En bouche, structure tannique élégante et soyeuse, belle longueur avec une finale persistante." :
+            "Arômes de fruits rouges et noirs, notes boisées et épicées. Bouche équilibrée avec des tanins souples et une belle persistance.",
+          pairings: isBordeaux ? 
+            ["Côte de bœuf grillée", "Magret de canard aux cèpes", "Comté 24 mois"] :
+            ["Viandes rouges grillées", "Gibier en sauce", "Fromages affinés"]
         };
       }
 
       setResult(parsedResult);
     } catch (err) {
       console.error("Erreur complète:", err);
-      throw new Error("Impossible de contacter le service d'analyse: " + err.message);
+      throw new Error(err.message || "Impossible de contacter le service d'analyse");
     }
   };
 
@@ -174,9 +190,21 @@ JSON uniquement, rien d'autre:`,
         <p className="text-center text-gray-600 mb-2">
           Scannez l'étiquette de votre vin pour une analyse détaillée
         </p>
-        <p className="text-center text-xs text-gray-500 mb-8">
-          Propulsé par Mistral-7B via Hugging Face
-        </p>
+        
+        <div className="flex items-center justify-center gap-3 mb-6">
+          <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={useBackend}
+              onChange={(e) => setUseBackend(e.target.checked)}
+              className="rounded"
+            />
+            Utiliser mon backend local
+          </label>
+          <span className="text-xs text-gray-500">
+            {useBackend ? "Backend: /api/analyze" : "OpenRouter (gratuit)"}
+          </span>
+        </div>
 
         <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
           <label className="block">
@@ -203,17 +231,19 @@ JSON uniquement, rien d'autre:`,
             <div className="mt-4 text-center">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-purple-700"></div>
               <p className="mt-2 text-gray-600">Analyse en cours...</p>
-              <p className="mt-1 text-xs text-gray-500">Cela peut prendre 10-20 secondes</p>
+              <p className="mt-1 text-xs text-gray-500">Peut prendre quelques secondes</p>
             </div>
           )}
 
           {error && (
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-red-700 font-semibold">Erreur</p>
+              <p className="text-red-700 font-semibold">❌ Erreur</p>
               <p className="text-red-600 text-sm mt-1">{error}</p>
-              <p className="text-xs text-gray-600 mt-2">
-                Note: L'API Hugging Face gratuite peut avoir des limitations. Réessayez dans quelques instants.
-              </p>
+              <div className="mt-3 text-xs text-gray-700 bg-gray-50 p-3 rounded">
+                <p className="font-semibold mb-2">💡 Solutions:</p>
+                <p className="mb-1">• Cochez "Utiliser mon backend local" et créez un fichier <code className="bg-gray-200 px-1">api/analyze.js</code></p>
+                <p>• Ou attendez quelques secondes et réessayez (rate limit possible)</p>
+              </div>
             </div>
           )}
 
