@@ -21,7 +21,7 @@ export default function ScanScreen({ navigation }) {
       );
 
       const response = await axios.post(
-        "https://TON-PROJET.vercel.app/api/analyze",
+        "https://vin-scan-tau.vercel.app/api/analyze",
         { text: data.text }
       );
 
